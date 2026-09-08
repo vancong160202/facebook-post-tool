@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+.venv/
+chrome-profile/
+.facebook_post_settings.json
+.pytest_cache/
