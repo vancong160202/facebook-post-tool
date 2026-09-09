@@ -1,5 +1,23 @@
 # Facebook Auto Posting Tool
 
+## Comment ảnh vào bài đã đăng
+
+Chạy chế độ comment thủ công sau khi bài Facebook đã xử lý xong:
+
+```powershell
+python main.py --comment
+```
+
+Chế độ `--comment` không tự đăng bài mới. Tool mở lần lượt 6 group comment đã cấu hình, tìm bài mới nhất của tài khoản đang đăng nhập trong mỗi group, rồi comment cùng một ảnh.
+
+Đặt ảnh comment trong folder `Comment` nằm cùng cấp với folder ảnh chính. Ví dụ, nếu folder ảnh chính là `C:\Users\TEN_USER\Dropbox\FCOnline` thì dùng:
+
+```text
+C:\Users\TEN_USER\Dropbox\Comment\
+```
+
+Tool lấy ảnh đầu tiên theo tên file (`.jpg`, `.jpeg`, `.png`, `.webp`). Mỗi group thử dán ảnh bằng `Ctrl+V` trước; nếu Facebook không hiện preview, tool dùng icon camera trong popup comment để tải ảnh. Tool chờ 8 giây upload và 8 giây sau khi gửi comment. Khi chạy xong cả 6 group không lỗi, ảnh đã dùng sẽ bị xóa khỏi folder `Comment`.
+
 Tool local trên Windows để tạo một bài Facebook gồm ảnh, caption và tối đa 10 group thông qua luồng **Thêm nhóm**.
 
 ## Tính năng
