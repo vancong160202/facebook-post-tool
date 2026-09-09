@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import subprocess
+import sys
 import threading
 from pathlib import Path
 from tkinter import END, LEFT, RIGHT, Button, Entry, Frame, Label, Listbox, Message, StringVar, Text, Tk, filedialog, messagebox
@@ -18,7 +20,18 @@ MAX_IMAGES = 100
 POST_IMAGE_LIMIT = 80
 AUTO_START_POSTING = True
 PROJECT_IMAGE_FOLDER = "images"
+COMMENT_FOLDER = "Comment"
+COMMENT_UPLOAD_WAIT_MS = 8000
+COMMENT_POST_WAIT_MS = 8000
 SETTINGS_FILE = ".facebook_post_settings.json"
+COMMENT_GROUPS = (
+    "FC Online - Chia Sẻ Giờ RESET Giá Cầu Thủ",
+    "FC ONLINE - FO4 Cộng Đồng Giao Lưu FC Online Việt Nam",
+    "TTCN FC Online - Joyce9999 - Xmen Club",
+    "FC ONLINE - Chia Sẻ Giờ Reset - Mua Bán Trao Đổi",
+    "FC Online - Hội Chợ Giao Lưu Và Trao Đổi FC Online Việt Nam",
+    "FC ONLINE FO4 GARENA VIỆT NAM",
+)
 DEFAULT_GROUPS = (
     "TTCN FC Online - Joyce9999 - Xmen Club",
     "FC ONLINE - FO4 Cộng Đồng Giao Lưu FC Online Việt Nam",
@@ -40,6 +53,7 @@ GROUP_SEARCH_TERMS = {
 class FacebookPostApp:
     def __init__(self, root: Tk) -> None:
         self.root = root
+        self.comment_only_mode = "--comment" in sys.argv
         self.root.title("Facebook Auto Posting Tool")
         self.root.geometry("760x760")
         self.root.minsize(680, 680)
@@ -53,7 +67,7 @@ class FacebookPostApp:
 
         self._build_ui()
         self.load_project_images()
-        if AUTO_START_POSTING:
+        if AUTO_START_POSTING and not self.comment_only_mode:
             self.root.after(1000, self.start_posting)
 
     def _build_ui(self) -> None:
@@ -103,6 +117,7 @@ class FacebookPostApp:
         self.progress.pack(fill="x", pady=(0, 8))
         Label(bottom, textvariable=self.status_var, anchor="w", fg="#555").pack(side=LEFT)
         Button(bottom, text="Mở Facebook và đăng bài", command=self.start_posting).pack(side=RIGHT)
+        Button(bottom, text="Comment ảnh vào 6 bài", command=self.start_commenting).pack(side=RIGHT, padx=(0, 8))
 
     def choose_images(self) -> None:
         selected = filedialog.askopenfilenames(
@@ -222,6 +237,15 @@ class FacebookPostApp:
                     return saved_folder
             except (OSError, TypeError, ValueError):
                 pass
+
+        for candidate in (
+            Path.home() / "Dropbox" / "FConline",
+            Path.home() / "Dropbox" / "FCOnline",
+            Path("C:/Dropbox/FConline"),
+            Path("C:/Dropbox/FCOnline"),
+        ):
+            if candidate.exists():
+                return candidate
         return Path(__file__).resolve().parent / PROJECT_IMAGE_FOLDER
 
     def start_posting(self) -> None:
@@ -245,11 +269,231 @@ class FacebookPostApp:
         self.status_var.set("Đang mở Chrome...")
         threading.Thread(target=self._run_browser, args=(caption, groups), daemon=True).start()
 
+    def start_commenting(self) -> None:
+        """Run manually after the main posts have had time to appear in each group."""
+        comment_image = self._comment_image_path()
+        if comment_image is None:
+            messagebox.showwarning(
+                "Chưa có ảnh comment",
+                f"Hãy đặt một ảnh vào folder Dropbox: {self._comment_folder()}",
+            )
+            return
+
+        self.progress.start(10)
+        self.status_var.set("Đang mở Chrome để comment ảnh...")
+        threading.Thread(
+            target=self._run_commenter,
+            args=(str(comment_image),),
+            daemon=True,
+        ).start()
+
+    def _comment_image_path(self) -> Path | None:
+        folder = self._comment_folder()
+        if not folder.is_dir():
+            return None
+        image_extensions = {".jpg", ".jpeg", ".png", ".webp"}
+        images = sorted(
+            (path for path in folder.iterdir() if path.is_file() and path.suffix.lower() in image_extensions),
+            key=lambda path: path.name.casefold(),
+        )
+        return images[0] if images else None
+
+    def _comment_folder(self) -> Path:
+        """Keep Comment beside FConline so the location also works on another Windows user."""
+        return self.image_folder.parent / COMMENT_FOLDER
+
     def _run_browser(self, caption: str, groups: list[str]) -> None:
         try:
             asyncio.run(self._post_to_facebook(caption, groups))
         except Exception as error:  # noqa: BLE001
             self.root.after(0, self._finish_with_error, str(error))
+
+    def _run_commenter(self, comment_image: str) -> None:
+        try:
+            asyncio.run(self._comment_on_existing_posts(comment_image))
+        except Exception as error:  # noqa: BLE001
+            self.root.after(0, self._finish_with_error, str(error))
+
+    async def _comment_on_existing_posts(self, comment_image: str) -> None:
+        profile_dir = Path(__file__).resolve().parent / "chrome-profile"
+        async with async_playwright() as playwright:
+            context = await playwright.chromium.launch_persistent_context(
+                str(profile_dir),
+                channel="chrome",
+                headless=False,
+                args=["--start-maximized"],
+            )
+            page = context.pages[0] if context.pages else await context.new_page()
+            await page.goto("https://www.facebook.com/", wait_until="domcontentloaded")
+            await self._wait_for_login(page)
+            await self._dismiss_optional_dialogs(page)
+            for index, group in enumerate(COMMENT_GROUPS, start=1):
+                self._set_status(f"Đang comment ảnh vào group {index}/{len(COMMENT_GROUPS)}: {group}")
+                await self._open_recent_group(page, group)
+                await self._open_my_group_posts(page)
+                await self._comment_image_on_latest_post(page, comment_image)
+            Path(comment_image).unlink()
+            self._set_status(f"Đã comment ảnh vào {len(COMMENT_GROUPS)} bài.")
+            self.root.after(0, self._finish_commenting)
+
+    async def _open_recent_group(self, page: Page, group_name: str) -> None:
+        """Open a group from Facebook's signed-in account 'Recent' search list."""
+        await page.goto("https://www.facebook.com/", wait_until="domcontentloaded")
+        await page.wait_for_timeout(1200)
+        search = page.locator(
+            'input[placeholder="Tìm kiếm trên Facebook"], input[placeholder="Search Facebook"]'
+        ).first
+        await search.wait_for(state="visible", timeout=30000)
+        await search.click(timeout=10000)
+        await page.wait_for_timeout(700)
+
+        # The visible recent-list title can be shortened.  Use the distinctive
+        # part after the first dash, never a generic prefix such as "FC Online".
+        distinctive_name = group_name.split(" - ", maxsplit=1)[-1]
+        candidates = (
+            page.get_by_text(group_name, exact=True).last,
+            page.get_by_text(re.compile(re.escape(distinctive_name), re.I)).last,
+        )
+        for candidate in candidates:
+            if await candidate.is_visible():
+                await candidate.click(timeout=10000)
+                await page.wait_for_timeout(1800)
+                if "/groups/" in page.url.lower():
+                    return
+        raise RuntimeError(
+            f"Không thấy group '{group_name}' trong danh sách Mới đây của ô tìm kiếm Facebook. "
+            "Hãy mở group đó thủ công một lần để nó xuất hiện trong danh sách này."
+        )
+
+    async def _open_my_group_posts(self, page: Page) -> None:
+        """Open the same 'group posts' view reached by clicking the signed-in profile."""
+        group_url = page.url.split("?", maxsplit=1)[0].rstrip("/")
+        cookies = await page.context.cookies()
+        user_id = next((cookie["value"] for cookie in cookies if cookie["name"] == "c_user"), None)
+        if not user_id:
+            raise RuntimeError("Không xác định được tài khoản Facebook đang đăng nhập.")
+        await page.goto(f"{group_url}/user/{user_id}/", wait_until="domcontentloaded")
+        await page.wait_for_timeout(2000)
+
+    async def _comment_image_on_latest_post(self, page: Page, comment_image: str) -> None:
+        """Comment only on the first post card in the user's group-post feed."""
+        post, comment_action = await self._latest_group_post_and_comment_action(page)
+        await comment_action.click(timeout=10000)
+
+        editor = await self._active_comment_editor(page, post, comment_action)
+        await self._attach_image_to_comment(page, editor, comment_image)
+        await page.wait_for_timeout(COMMENT_UPLOAD_WAIT_MS)
+        await editor.focus()
+        await page.keyboard.press("Enter")
+        await page.wait_for_timeout(COMMENT_POST_WAIT_MS)
+
+    async def _latest_group_post_and_comment_action(self, page: Page):
+        """Facebook may have sidebars with comment icons; restrict the target to a feed card."""
+        viewport_width = await page.evaluate("window.innerWidth")
+        selectors = (
+            '[role="article"]',
+            '[data-pagelet^="FeedUnit_"]',
+            '[aria-posinset="1"]',
+            '[role="feed"] > div',
+        )
+        fallback = None
+        for selector in selectors:
+            posts = page.locator(selector)
+            for index in range(await posts.count()):
+                post = posts.nth(index)
+                if not await post.is_visible():
+                    continue
+                box = await post.bounding_box()
+                if not box or box["height"] < 100 or box["y"] < 70:
+                    continue
+                comment_action = await self._comment_action_in_post(post)
+                if comment_action is None:
+                    continue
+                if box["x"] >= viewport_width * 0.25:
+                    return post, comment_action
+                fallback = (post, comment_action)
+        if fallback is not None:
+            return fallback
+        raise RuntimeError("Không tìm thấy card bài mới nhất hoặc icon Bình luận trong card đó.")
+
+    async def _comment_action_in_post(self, post):
+        controls = post.locator('[role="button"], button, [aria-label]')
+        for index in range(await controls.count()):
+            control = controls.nth(index)
+            if not await control.is_visible():
+                continue
+            label = (await control.get_attribute("aria-label") or "").casefold()
+            text = (await control.text_content() or "").strip().casefold()
+            if "bình luận" in label or "comment" in label or "bình luận" in text or "comment" in text:
+                return control
+        return None
+
+    async def _active_comment_editor(self, page: Page, post, comment_action):
+        action_box = await comment_action.bounding_box()
+        for _ in range(10):
+            editors = post.locator('[contenteditable="true"]')
+            if not await editors.count():
+                editors = page.locator('[contenteditable="true"]')
+            for index in range(await editors.count() - 1, -1, -1):
+                editor = editors.nth(index)
+                if not await editor.is_visible():
+                    continue
+                editor_box = await editor.bounding_box()
+                if editor_box and (not action_box or editor_box["y"] >= action_box["y"] - 30):
+                    return editor
+            await page.wait_for_timeout(500)
+        raise RuntimeError("Đã bấm icon Bình luận nhưng không thấy ô nhập bình luận của bài mới nhất.")
+
+    async def _attach_image_to_comment(
+        self,
+        page: Page,
+        editor,
+        comment_image: str,
+    ) -> None:
+        """Try Ctrl+V first; use the comment camera only if its preview does not appear."""
+        dialog = None
+        dialogs = page.locator('[role="dialog"]')
+        for index in range(await dialogs.count() - 1, -1, -1):
+            candidate = dialogs.nth(index)
+            if await candidate.is_visible():
+                dialog = candidate
+                break
+
+        image_count_before = await dialog.locator("img").count() if dialog else 0
+        self._copy_image_to_clipboard(Path(comment_image))
+        await editor.focus()
+        await page.keyboard.press("Control+V")
+        await page.wait_for_timeout(3000)
+        if dialog and await dialog.locator("img").count() > image_count_before:
+            return
+
+        # Ctrl+V did not produce a preview: target the photo-camera input in the
+        # currently open comment dialog instead.
+        if dialog:
+            file_inputs = dialog.locator('input[type="file"]')
+            if await file_inputs.count():
+                await file_inputs.last.set_input_files(comment_image)
+                return
+        raise RuntimeError("Không thể dán ảnh hoặc tìm thấy icon camera trong ô bình luận này.")
+
+    def _copy_image_to_clipboard(self, image_path: Path) -> None:
+        """Put a bitmap, not a file path, on the Windows clipboard for Ctrl+V."""
+        escaped_path = str(image_path).replace("'", "''")
+        command = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "Add-Type -AssemblyName System.Drawing; "
+            f"$image = [System.Drawing.Image]::FromFile('{escaped_path}'); "
+            "try { [System.Windows.Forms.Clipboard]::SetImage($image) } "
+            "finally { $image.Dispose() }"
+        )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-STA", "-Command", command],
+            capture_output=True,
+            text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        if result.returncode:
+            raise RuntimeError(f"Không thể copy ảnh comment vào clipboard: {result.stderr.strip()}")
 
     async def _post_to_facebook(self, caption: str, groups: list[str]) -> None:
         profile_dir = Path(__file__).resolve().parent / "chrome-profile"
@@ -614,6 +858,11 @@ class FacebookPostApp:
         self.progress.stop()
         self.status_var.set("Có lỗi, Chrome đã dừng.")
         messagebox.showerror("Không thể hoàn tất", error)
+
+    def _finish_commenting(self) -> None:
+        self.progress.stop()
+        self.status_var.set(f"Đã comment ảnh vào {len(COMMENT_GROUPS)} bài.")
+        messagebox.showinfo("Hoàn tất", f"Đã comment ảnh vào {len(COMMENT_GROUPS)} bài trong group.")
 
 
 if __name__ == "__main__":
