@@ -450,31 +450,10 @@ class FacebookPostApp:
         editor,
         comment_image: str,
     ) -> None:
-        """Try Ctrl+V first; use the comment camera only if its preview does not appear."""
-        dialog = None
-        dialogs = page.locator('[role="dialog"]')
-        for index in range(await dialogs.count() - 1, -1, -1):
-            candidate = dialogs.nth(index)
-            if await candidate.is_visible():
-                dialog = candidate
-                break
-
-        image_count_before = await dialog.locator("img").count() if dialog else 0
+        """Paste the selected Dropbox image into the active Facebook comment editor."""
         self._copy_image_to_clipboard(Path(comment_image))
         await editor.focus()
         await page.keyboard.press("Control+V")
-        await page.wait_for_timeout(3000)
-        if dialog and await dialog.locator("img").count() > image_count_before:
-            return
-
-        # Ctrl+V did not produce a preview: target the photo-camera input in the
-        # currently open comment dialog instead.
-        if dialog:
-            file_inputs = dialog.locator('input[type="file"]')
-            if await file_inputs.count():
-                await file_inputs.last.set_input_files(comment_image)
-                return
-        raise RuntimeError("Không thể dán ảnh hoặc tìm thấy icon camera trong ô bình luận này.")
 
     def _copy_image_to_clipboard(self, image_path: Path) -> None:
         """Put a bitmap, not a file path, on the Windows clipboard for Ctrl+V."""
