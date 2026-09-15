@@ -2,13 +2,13 @@
 
 ## Comment ảnh vào bài đã đăng
 
-Chạy chế độ comment thủ công sau khi bài Facebook đã xử lý xong:
+Sau khi bài Facebook đã xử lý xong, chạy chế độ comment:
 
 ```powershell
 python main.py --comment
 ```
 
-Chế độ `--comment` không tự đăng bài mới. Tool mở lần lượt 6 group comment đã cấu hình, tìm bài mới nhất của tài khoản đang đăng nhập trong mỗi group, rồi comment cùng một ảnh.
+Chế độ `--comment` không đăng bài mới và tự bắt đầu luồng comment. Tool mở lần lượt 6 group đã cấu hình, tìm bài mới nhất của tài khoản đang đăng nhập trong mỗi group, rồi comment cùng một ảnh kèm chữ `Đã bay`.
 
 Đặt ảnh comment trong folder `Comment` nằm cùng cấp với folder ảnh chính. Ví dụ, nếu folder ảnh chính là `C:\Users\TEN_USER\Dropbox\FCOnline` thì dùng:
 
@@ -16,7 +16,7 @@ Chế độ `--comment` không tự đăng bài mới. Tool mở lần lượt 6
 C:\Users\TEN_USER\Dropbox\Comment\
 ```
 
-Tool lấy ảnh đầu tiên theo tên file (`.jpg`, `.jpeg`, `.png`, `.webp`). Mỗi group thử dán ảnh bằng `Ctrl+V` trước; nếu Facebook không hiện preview, tool dùng icon camera trong popup comment để tải ảnh. Tool chờ 8 giây upload và 8 giây sau khi gửi comment. Khi chạy xong cả 6 group không lỗi, ảnh đã dùng sẽ bị xóa khỏi folder `Comment`.
+Tool lấy ảnh đầu tiên theo tên file (`.jpg`, `.jpeg`, `.png`, `.webp`) và copy ảnh vào clipboard trước khi dán bằng `Ctrl+V` vào ô comment. Tool chờ 8 giây upload và 8 giây sau khi gửi comment. Khi chạy xong cả 6 group không lỗi, ảnh đã dùng sẽ bị xóa khỏi folder `Comment`.
 
 Tool local trên Windows để tạo một bài Facebook gồm ảnh, caption và tối đa 10 group thông qua luồng **Thêm nhóm**.
 

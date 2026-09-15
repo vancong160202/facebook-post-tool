@@ -21,6 +21,7 @@ POST_IMAGE_LIMIT = 80
 AUTO_START_POSTING = True
 PROJECT_IMAGE_FOLDER = "images"
 COMMENT_FOLDER = "Comment"
+COMMENT_TEXT = "Đã bay"
 COMMENT_UPLOAD_WAIT_MS = 8000
 COMMENT_POST_WAIT_MS = 8000
 SETTINGS_FILE = ".facebook_post_settings.json"
@@ -69,6 +70,8 @@ class FacebookPostApp:
         self.load_project_images()
         if AUTO_START_POSTING and not self.comment_only_mode:
             self.root.after(1000, self.start_posting)
+        elif self.comment_only_mode:
+            self.root.after(1000, self.start_commenting)
 
     def _build_ui(self) -> None:
         Label(self.root, text="Facebook Auto Posting Tool", font=("Segoe UI", 20, "bold")).pack(pady=(18, 4))
@@ -429,7 +432,13 @@ class FacebookPostApp:
         return None
 
     async def _active_comment_editor(self, page: Page, post, comment_action):
-        action_box = await comment_action.bounding_box()
+        # Facebook usually re-renders the action row immediately after clicking
+        # Comment. The old button locator can then disappear, so never let its
+        # bounding box block finding the newly opened editor.
+        try:
+            action_box = await comment_action.bounding_box(timeout=1000)
+        except Exception:  # noqa: BLE001
+            action_box = None
         for _ in range(10):
             editors = post.locator('[contenteditable="true"]')
             if not await editors.count():
@@ -453,6 +462,7 @@ class FacebookPostApp:
         """Paste the selected Dropbox image into the active Facebook comment editor."""
         self._copy_image_to_clipboard(Path(comment_image))
         await editor.focus()
+        await editor.press_sequentially(COMMENT_TEXT)
         await page.keyboard.press("Control+V")
 
     def _copy_image_to_clipboard(self, image_path: Path) -> None:
@@ -462,8 +472,10 @@ class FacebookPostApp:
             "Add-Type -AssemblyName System.Windows.Forms; "
             "Add-Type -AssemblyName System.Drawing; "
             f"$image = [System.Drawing.Image]::FromFile('{escaped_path}'); "
-            "try { [System.Windows.Forms.Clipboard]::SetImage($image) } "
-            "finally { $image.Dispose() }"
+            "$bitmap = New-Object System.Drawing.Bitmap($image); "
+            "$image.Dispose(); "
+            "[System.Windows.Forms.Clipboard]::SetImage($bitmap); "
+            "if (-not [System.Windows.Forms.Clipboard]::ContainsImage()) { exit 1 }"
         )
         result = subprocess.run(
             ["powershell", "-NoProfile", "-STA", "-Command", command],
