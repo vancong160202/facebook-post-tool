@@ -9,8 +9,6 @@ import threading
 from pathlib import Path
 from tkinter import END, LEFT, RIGHT, Button, Entry, Frame, Label, Listbox, Message, StringVar, Text, Tk, filedialog, messagebox
 from tkinter.ttk import Progressbar
-from urllib.parse import quote_plus
-
 from playwright.async_api import BrowserContext, Page, async_playwright
 
 
@@ -49,6 +47,20 @@ GROUP_SEARCH_TERMS = {
     "FC Online FO4 GARENA VIỆT NAM": "FC ONLINE FO4",
     "Mạnh Cuong Tran FC Online - Giao Lưu & Trao Đổi Về FC Online": "Manh Cuong Tran FC Online",
 }
+PRIMARY_GROUP_URL = "https://www.facebook.com/groups/joyce9999fconline"
+SECONDARY_PRIMARY_GROUP_NAME = "FCO - Mua Bán Acc FC Online Vietnam"
+SECONDARY_PRIMARY_GROUP_URL = "https://www.facebook.com/groups/easports.fconline.muabanvatraodoiaccfco/"
+SECONDARY_SHARE_GROUPS = (
+    "FC Online - Hội Săn +11 +12 +13♦ VIP",
+    "FC Online - Đặng Ngọc Mại FCO",
+    "FC ONLINE - GIAO LƯU ĐỘI HÌNH VÀ TRẢI NGHIỆM CẦU THỦ",
+    "FC Online - Đại Bùi FCO",
+    "TTCN FC Online - Giao Lưu Acc Và Cầu Thủ FCO",
+    "FO4 (FC Online) - Cộng Đồng Giao Lưu Acc Và Cầu Thủ FIFA Online 4 🇻🇳",
+    "FCO - Cộng Đồng Giao Lưu ACC FC Online Việt Nam",
+    "FO4 (FC Online) - Cộng Đồng Giao Lưu FIFA Online 4 🇻🇳",
+    "FC ONLINE -CHỢ MUA BÁN,TRAO ĐỔI ACC VÀ CẦU THỦ UY TÍN",
+)
 
 
 class FacebookPostApp:
@@ -502,10 +514,18 @@ class FacebookPostApp:
                 self._set_status("Chrome đã mở. Đang kiểm tra Facebook...")
                 await self._wait_for_login(page)
                 await self._dismiss_optional_dialogs(page)
-                await self._open_group(page, groups[0])
+                await self._open_group(page, SECONDARY_PRIMARY_GROUP_NAME, SECONDARY_PRIMARY_GROUP_URL)
+                await self._create_post(page, caption, [SECONDARY_PRIMARY_GROUP_NAME, *SECONDARY_SHARE_GROUPS])
+                self._set_status("Đã đăng xong lượt 2. Đang mở group TTCN Joyce cho lượt 1...")
+                await self._open_group(page, groups[0], PRIMARY_GROUP_URL)
                 await self._create_post(page, caption, groups)
-                self._set_status("Đã xác nhận bài đăng hoàn tất.")
-                self.root.after(0, lambda: messagebox.showinfo("Hoàn tất", "Đã xác nhận bài viết đăng thành công trên group."))
+                self._set_status("Đã xác nhận hoàn tất cả 2 chiến dịch đăng bài.")
+                self.root.after(
+                    0,
+                    lambda: messagebox.showinfo(
+                        "Hoàn tất", "Đã đăng thành công trên 2 group chính và các group chia sẻ kèm theo."
+                    ),
+                )
             finally:
                 pass
 
@@ -588,9 +608,12 @@ class FacebookPostApp:
         await page.wait_for_timeout(3000)
         editor = await self._caption_editor(page)
         if editor is not None and await editor.is_visible():
-            raise RuntimeError(
-                "Đăng bài thành công!"
-            )
+            # Facebook can leave a blank composer open after a successful post.
+            # That is a success state, not an error: close it and let the
+            # caller continue to the second posting campaign.
+            if not (await editor.inner_text()).strip():
+                await self._close_empty_composer(page)
+                return
 
         matches = page.get_by_text(caption, exact=True)
         for index in range(await matches.count()):
@@ -779,24 +802,17 @@ class FacebookPostApp:
             f"cho giao diện/tài khoản này. URL hiện tại: {page.url}"
         )
 
-    async def _open_group(self, page: Page, group_name: str) -> None:
+    async def _open_group(self, page: Page, group_name: str, group_url: str) -> None:
         self._set_status(f"Đang mở group chính: {group_name}")
-        search_url = f"https://www.facebook.com/search/groups/?q={quote_plus(group_name)}"
-        await page.goto(search_url, wait_until="domcontentloaded")
-        await page.wait_for_timeout(2500)
-
-        group_link = page.get_by_role("link", name=group_name, exact=True).first
-        if not await group_link.is_visible():
-            group_link = page.get_by_text(group_name, exact=True).first
-        if not await group_link.is_visible():
-            raise RuntimeError(
-                f"Không tìm thấy group chính '{group_name}' trong kết quả Facebook. "
-                "Hãy kiểm tra lại tên group hoặc mở group đó trong Chrome trước."
-            )
-        await group_link.click(timeout=30000)
+        # Do not rely on Facebook group search: it can omit groups or return a
+        # similarly named result. The group is opened by its stable URL.
+        await page.goto(group_url, wait_until="domcontentloaded")
         await page.wait_for_timeout(2500)
         if "/groups/" not in page.url.lower():
-            raise RuntimeError(f"Chưa vào được group chính '{group_name}'. URL hiện tại: {page.url}")
+            raise RuntimeError(
+                "Chưa vào được group chính bằng URL trực tiếp. "
+                f"URL hiện tại: {page.url}"
+            )
 
     async def _dismiss_optional_dialogs(self, page: Page) -> None:
         for label in ("Không phải bây giờ", "Not now", "Đóng", "Close"):
